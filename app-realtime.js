@@ -1,52 +1,63 @@
-// Real-time Overpass API App
+// Complete Real-time Overpass API App
 const app = {
     userLocation: null,
     currentCategory: 'food',
     currentRadius: 5,
     categoryMap: {
-        'food': 'amenity=restaurant',
-        'hotels': 'tourism=hotel',
-        'restrooms': 'amenity=toilets',
-        'travel': 'tourism=attraction',
-        'cafes': 'amenity=cafe',
+        'food': 'restaurant',
+        'hotels': 'hotel',
+        'restrooms': 'toilets',
+        'travel': 'attraction',
+        'cafes': 'cafe',
         'shopping': 'shop',
-        'emergency': 'amenity=hospital'
+        'emergency': 'hospital'
     }
 };
 
-// Get user location
-function getUserLocation() {
-    navigator.geolocation.getCurrentPosition(
-        pos => {
-            app.userLocation = {lat: pos.coords.latitude, lng: pos.coords.longitude};
-            console.log('Got location:', app.userLocation);
-            fetchPlaces();
-        },
-        error => {
+// Find user location and initialize map
+function findMe() {
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition((position) => {
+            const lat = position.coords.latitude;
+            const lon = position.coords.longitude;
+            app.userLocation = {lat: lat, lng: lon};
+            console.log('Found location:', lat, lon);
+            
+            // This moves your Leaflet map to your real location
+            if (window.map) {
+                map.setView([lat, lon], 14); 
+            }
+            
+            fetchNearbyPlaces(lat, lon, app.categoryMap[app.currentCategory]);
+        }, (error) => {
             console.error('Location error:', error);
-            app.userLocation = {lat: 40.7128, lng: -74.0060}; // NYC fallback
-            fetchPlaces();
-        }
-    );
+            // Fallback to NYC
+            app.userLocation = {lat: 40.7128, lng: -74.0060};
+            if (window.map) {
+                map.setView([40.7128, -74.0060], 14);
+            }
+            fetchNearbyPlaces(40.7128, -74.0060, app.categoryMap[app.currentCategory]);
+        });
+    } else {
+        console.error('Geolocation not supported');
+        app.userLocation = {lat: 40.7128, lng: -74.0060};
+        fetchNearbyPlaces(40.7128, -74.0060, app.categoryMap[app.currentCategory]);
+    }
 }
 
-// Fetch real places from Overpass API
-async function fetchPlaces() {
-    if (!app.userLocation) {
-        console.log('No location yet');
-        return;
-    }
+// Fetch nearby places from Overpass API
+async function fetchNearbyPlaces(lat, lon, type = 'restaurant') {
+    console.log(`Fetching ${type} places near ${lat}, ${lon}`);
     
-    const category = app.categoryMap[app.currentCategory];
-    const radius = app.currentRadius * 1000;
-    const query = `[out:json];node["${category}"](around:${radius},${app.userLocation.lat},${app.userLocation.lng});out;`;
-    
-    console.log('Fetching places for:', category);
-    
+    // Overpass API Query
+    const query = `[out:json];node["amenity"="${type}"](around:5000,${lat},${lon});out;`;
+    const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+
     try {
-        const response = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+        const response = await fetch(url);
         const data = await response.json();
-        console.log('Found places:', data.elements.length);
+        console.log(`Found ${data.elements.length} places`);
+        
         displayPlaces(data.elements);
     } catch (error) {
         console.error('Fetch error:', error);
@@ -54,61 +65,63 @@ async function fetchPlaces() {
     }
 }
 
-// Display real places
-function displayPlaces(places) {
-    const container = document.getElementById('placesList');
+// Display places in the UI
+function displayPlaces(elements) {
+    const container = document.getElementById('placesList'); // Updated to match your HTML
     if (!container) {
         console.error('Places container not found');
         return;
     }
     
-    // Clear existing content
-    container.innerHTML = '';
-    
+    container.innerHTML = ''; // Clear old results
+
+    if (elements.length === 0) {
+        container.innerHTML = `
+            <h3 class="text-lg font-bold text-gray-800 mb-4">No Places Found</h3>
+            <div class="text-center py-8 text-gray-500">
+                <p>No places found nearby. Try a different category.</p>
+            </div>
+        `;
+        return;
+    }
+
     // Add header
     const header = document.createElement('h3');
     header.className = 'text-lg font-bold text-gray-800 mb-4';
-    header.textContent = `Nearby ${app.currentCategory} (${places.length} found)`;
+    header.textContent = `Nearby ${app.currentCategory} (${elements.length} found)`;
     container.appendChild(header);
-    
-    if (places.length === 0) {
-        const noResults = document.createElement('div');
-        noResults.className = 'text-center py-8 text-gray-500';
-        noResults.innerHTML = '<p>No places found nearby. Try increasing the radius.</p>';
-        container.appendChild(noResults);
-        return;
+
+    // Sort by distance from user location
+    if (app.userLocation) {
+        elements.sort((a, b) => {
+            const distA = getDistance(app.userLocation, {lat: a.lat, lng: a.lon});
+            const distB = getDistance(app.userLocation, {lat: b.lat, lng: b.lon});
+            return distA - distB;
+        });
     }
-    
-    // Sort by distance
-    places.sort((a, b) => {
-        const distA = getDistance(app.userLocation, {lat: a.lat, lng: a.lon});
-        const distB = getDistance(app.userLocation, {lat: b.lat, lng: b.lon});
-        return distA - distB;
-    });
-    
-    // Create place cards
-    places.forEach(place => {
-        const dist = getDistance(app.userLocation, {lat: place.lat, lng: place.lon});
-        const name = place.tags?.name || 'Unknown Place';
+
+    elements.forEach(place => {
+        const name = place.tags.name || "Nearby Place";
         const imageUrl = getCategoryImage(app.currentCategory);
+        const distance = app.userLocation ? getDistance(app.userLocation, {lat: place.lat, lng: place.lon}) : 0;
         
-        const card = document.createElement('div');
-        card.className = 'glass rounded-3xl overflow-hidden shadow-lg p-3 flex gap-4 cursor-pointer place-card';
-        card.innerHTML = `
+        const placeCard = document.createElement('div');
+        placeCard.className = 'glass rounded-3xl overflow-hidden shadow-lg p-3 flex gap-4 cursor-pointer place-card mb-4';
+        placeCard.innerHTML = `
             <img src="${imageUrl}" class="w-24 h-24 rounded-2xl object-cover">
             <div class="flex-1">
                 <div class="flex justify-between items-start">
                     <h4 class="font-bold text-gray-800">${name}</h4>
                     <span class="bg-green-100 text-green-600 text-[10px] px-2 py-1 rounded-full">Open Now</span>
                 </div>
-                <p class="text-xs text-gray-500 mt-1">📍 ${dist.toFixed(1)} km away</p>
+                <p class="text-xs text-gray-500 mt-1">📍 ${distance.toFixed(1)} km away</p>
                 <p class="text-xs text-gray-400 mt-1">📍 ${place.lat.toFixed(4)}, ${place.lon.toFixed(4)}</p>
-                <button onclick="event.stopPropagation(); openDirections(${place.lat}, ${place.lon}, '${name.replace(/'/g, "\\'")}')" class="mt-2 bg-purple-500 text-white text-xs px-3 py-1 rounded-full hover:bg-purple-600 transition-colors">
+                <button onclick="window.open('https://www.google.com/maps/search/?api=1&query=${place.lat},${place.lon}')" class="mt-2 bg-purple-500 text-white text-xs px-3 py-1 rounded-full hover:bg-purple-600 transition-colors">
                     🧭 Directions
                 </button>
             </div>
         `;
-        container.appendChild(card);
+        container.appendChild(placeCard);
     });
 }
 
@@ -126,7 +139,7 @@ function getCategoryImage(category) {
     return images[category] || images['food'];
 }
 
-// Calculate distance
+// Calculate distance between two points
 function getDistance(p1, p2) {
     const R = 6371; // Earth's radius in km
     const dLat = (p2.lat - p1.lat) * Math.PI / 180;
@@ -137,14 +150,7 @@ function getDistance(p1, p2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-// Open Google Maps directions
-function openDirections(lat, lng, name) {
-    const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&destination_place_id=${encodeURIComponent(name)}`;
-    console.log('Opening directions:', url);
-    window.open(url, '_blank');
-}
-
-// Show error
+// Show error message
 function showError() {
     const container = document.getElementById('placesList');
     if (!container) return;
@@ -160,9 +166,9 @@ function showError() {
     `;
 }
 
-// Setup event listeners
-function setupListeners() {
-    // Category clicks
+// Setup event listeners for categories
+function setupCategoryListeners() {
+    // Food: onclick="fetchNearbyPlaces(userLat, userLon, 'restaurant')"
     document.querySelectorAll('.category-item').forEach(item => {
         item.addEventListener('click', function() {
             // Update visual state
@@ -172,12 +178,19 @@ function setupListeners() {
             this.querySelector('div').classList.add('bg-purple-100', 'border-2', 'border-purple-500');
             
             app.currentCategory = this.dataset.category;
-            console.log('Category changed to:', app.currentCategory);
-            fetchPlaces();
+            const type = app.categoryMap[app.currentCategory];
+            
+            if (app.userLocation) {
+                fetchNearbyPlaces(app.userLocation.lat, app.userLocation.lng, type);
+            } else {
+                findMe(); // Will fetch after getting location
+            }
         });
     });
-    
-    // Radius clicks
+}
+
+// Setup radius filter listeners
+function setupRadiusListeners() {
     document.querySelectorAll('.radius-filter').forEach(btn => {
         btn.addEventListener('click', function() {
             // Update visual state
@@ -189,43 +202,45 @@ function setupListeners() {
             this.classList.remove('hover:bg-white/50');
             
             app.currentRadius = parseInt(this.dataset.radius);
-            console.log('Radius changed to:', app.currentRadius);
-            fetchPlaces();
-        });
-    });
-    
-    // Search input
-    const searchInput = document.getElementById('searchInput');
-    if (searchInput) {
-        searchInput.addEventListener('input', function() {
-            console.log('Search:', this.value);
-            // For now, just refetch places
-            if (this.value.trim() === '') {
-                fetchPlaces();
+            
+            // Refetch places with new radius
+            if (app.userLocation) {
+                const type = app.categoryMap[app.currentCategory];
+                fetchNearbyPlaces(app.userLocation.lat, app.userLocation.lng, type);
             }
         });
-    }
+    });
 }
+
+// Global variables for onclick handlers
+window.userLat = null;
+window.userLon = null;
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
     console.log('App initializing...');
-    setupListeners();
-    getUserLocation();
     
-    // Set initial category visual state
+    // Setup listeners
+    setupCategoryListeners();
+    setupRadiusListeners();
+    
+    // Set initial visual states
     const firstCategory = document.querySelector('.category-item[data-category="food"]');
     if (firstCategory) {
         firstCategory.querySelector('div').classList.add('bg-purple-100', 'border-2', 'border-purple-500');
     }
     
-    // Set initial radius visual state
     const firstRadius = document.querySelector('.radius-filter[data-radius="5"]');
     if (firstRadius) {
         firstRadius.classList.add('bg-purple-500', 'text-white');
         firstRadius.classList.remove('hover:bg-white/50');
     }
+    
+    // Get user location and fetch places
+    findMe();
 });
 
 // Make functions global for onclick handlers
-window.openDirections = openDirections;
+window.findMe = findMe;
+window.fetchNearbyPlaces = fetchNearbyPlaces;
+window.displayPlaces = displayPlaces;
